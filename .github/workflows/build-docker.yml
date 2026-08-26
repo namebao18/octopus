@@ -2,7 +2,9 @@
 # 与原仓库 release.yaml 的区别：
 #   1. 只构建 linux/amd64 单平台（NAS 用，省一半以上时间）
 #   2. 只推送 ghcr.io，使用自带 GITHUB_TOKEN，无需配置任何 secrets
-#   3. 不上传 Release（fork 没有 tags，原流程会失败）
+#   3. 不跑 scripts/updatePrice.py——该脚本从 models.dev 重新生成价格表，
+#      今日数据含重复模型名会生成非法 Go 代码(duplicate key)，且价格仅用于成本展示，
+#      跳过后使用 v0.9.28 仓库自带的 presets.go，无任何功能影响
 name: build-docker
 
 on:
@@ -24,20 +26,12 @@ jobs:
         uses: actions/checkout@v5
         with:
           ref: v0.9.28-patch   # 构建补丁分支
-          fetch-depth: 0   # 拉全历史，build.sh 里 git describe 取版本号用
-
-      - name: Fetch tags
-        run: git fetch --tags --force || echo "no tags in fork, version will be dev"
+          fetch-depth: 0       # 拉全历史和 tags，供版本号注入
 
       - name: Setup Go
         uses: actions/setup-go@v6
         with:
           go-version: 'stable'
-
-      - name: Setup Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: '3.13'
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -51,11 +45,25 @@ jobs:
           cache: 'pnpm'
           cache-dependency-path: web/pnpm-lock.yaml
 
-      # 单平台构建（含前端 pnpm build + 价格数据更新 + Go 编译）
-      - name: Build linux/amd64 binary
-        run: bash scripts/build.sh build linux x86_64
+      # 等效 build.sh 的前端步骤：构建 Next.js 并输出到 static/out（嵌入 Go 二进制）
+      - name: Build frontend
+        run: |
+          cd web && pnpm install && pnpm run build && cd ..
+          rm -rf static/out
+          mv web/out static/
 
-      # Dockerfile.debian 只负责 COPY 二进制进镜像，需要按它的目录约定摆好文件
+      # 等效 build.sh 的 Go 编译步骤；跳过 updatePrice.py 规避其动态生成代码的重复 key bug
+      - name: Build linux/amd64 binary
+        run: |
+          VERSION=$(git describe --tags --abbrev=0 || echo dev)
+          BUILD_TIME=$(TZ='Asia/Shanghai' date +'%F %T %z')
+          COMMIT=$(git rev-parse --short HEAD)
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build \
+            -o build/bin/octopus-linux-x86_64 \
+            -ldflags="-X 'github.com/bestruirui/octopus/internal/conf.Version=${VERSION}' -X 'github.com/bestruirui/octopus/internal/conf.BuildTime=${BUILD_TIME}' -X 'github.com/bestruirui/octopus/internal/conf.Author=bestrui' -X 'github.com/bestruirui/octopus/internal/conf.Commit=${COMMIT}' -s -w" \
+            -tags=jsoniter .
+
+      # 按 Dockerfile.debian 的约定摆放二进制
       - name: Prepare docker binary layout
         run: |
           mkdir -p build/docker/linux/amd64
