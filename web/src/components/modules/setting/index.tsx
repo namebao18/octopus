@@ -1,10 +1,13 @@
 'use client';
 
+// 设置页组装模块。
+// 魔改说明：相比上游 v0.9.28 移除了「LLM 价格」面板（SettingLLMPrice），
+// 价格数据仅用于成本展示，本部署不需要该界面。
+
 import { PageWrapper } from '@/components/common/PageWrapper';
 import { SettingAppearance } from './Appearance';
 import { SettingSystem } from './System';
 import { SettingAPIKey } from './APIKey';
-import { SettingLLMPrice } from './LLMPrice';
 import { SettingAccount } from './Account';
 import { SettingInfo } from './Info';
 import { SettingLLMSync } from './LLMSync';
@@ -21,7 +24,6 @@ export function Setting() {
                 <SettingAccount key="setting-account" />
                 <SettingSystem key="setting-system" />
                 <SettingLog key="setting-log" />
-                <SettingLLMPrice key="setting-llmprice" />
                 <SettingAPIKey key="setting-apikey" />
                 <SettingLLMSync key="setting-llmsync" />
                 <SettingCircuitBreaker key="setting-circuit-breaker" />
