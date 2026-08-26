@@ -46,9 +46,13 @@ jobs:
           cache-dependency-path: web/pnpm-lock.yaml
 
       # 等效 build.sh 的前端步骤：构建 Next.js 并输出到 static/out（嵌入 Go 二进制）
+      # 注入版本号与仓库地址，否则前端 APP_VERSION=unknown 与后端版本不一致，触发"版本不匹配"警告
       - name: Build frontend
         run: |
-          cd web && pnpm install && pnpm run build && cd ..
+          VERSION=$(git describe --tags --abbrev=0 || echo dev)
+          cd web
+          NEXT_PUBLIC_APP_VERSION="$VERSION" NEXT_PUBLIC_GITHUB_REPO="https://github.com/namebao18/octopus" pnpm install && NEXT_PUBLIC_APP_VERSION="$VERSION" NEXT_PUBLIC_GITHUB_REPO="https://github.com/namebao18/octopus" pnpm run build
+          cd ..
           rm -rf static/out
           mv web/out static/
 
@@ -87,4 +91,4 @@ jobs:
           file: ./scripts/dockerfiles/Dockerfile.debian
           platforms: linux/amd64
           push: true
-          tags: ghcr.io/namebao18/octopus:v0.9.28-emptyfix.2
+          tags: ghcr.io/namebao18/octopus:v0.9.28-emptyfix.3
