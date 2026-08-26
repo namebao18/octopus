@@ -91,4 +91,4 @@ jobs:
           file: ./scripts/dockerfiles/Dockerfile.debian
           platforms: linux/amd64
           push: true
-          tags: ghcr.io/namebao18/octopus:v0.9.28-emptyfix.3
+          tags: ghcr.io/namebao18/octopus:v0.9.28-emptyfix.4
