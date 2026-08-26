@@ -1,9 +1,10 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 
-export type NavItem = 'home' | 'channel' | 'group' | 'model' | 'log' | 'setting'
+// 魔改：NavItem 去掉 'model'（原"价格"导航项已删除）
+export type NavItem = 'home' | 'channel' | 'group' | 'log' | 'setting'
 
-const NAV_ORDER: NavItem[] = ['home', 'channel', 'group', 'model', 'log', 'setting']
+const NAV_ORDER: NavItem[] = ['home', 'channel', 'group', 'log', 'setting']
 
 interface NavState {
     activeItem: NavItem
@@ -33,6 +34,15 @@ export const useNavStore = create<NavState>()(
         }),
         {
             name: 'nav-storage',
+            // 魔改兜底：若本地缓存里 activeItem 是已删除的 'model'(原价格页)，
+            // 恢复时重置回主页，避免指向不存在的模块导致白屏
+            merge: (persisted, current) => {
+                const p = persisted as Partial<NavState> | undefined
+                if (p?.activeItem && !(NAV_ORDER as string[]).includes(p.activeItem)) {
+                    p.activeItem = 'home'
+                }
+                return { ...current, ...p }
+            },
         }
     )
 )
