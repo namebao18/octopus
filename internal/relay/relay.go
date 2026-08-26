@@ -474,6 +474,15 @@ func (ra *relayAttempt) handleResponse(ctx context.Context, response *http.Respo
 		return fmt.Errorf("failed to transform outbound response: %w", err)
 	}
 
+	// 空回复检测补丁：非流式 chat 响应若为零输出（无内容、无工具调用），
+	// 视为上游失败返回错误，由外层 Handler 循环自动换渠道/换 key 重试，
+	// 避免把空气响应交给下游（如 MoviePilot Agent）导致静默无回复。
+	// 注意必须在 c.Data 写回客户端之前拦截，否则 Writer 已写入无法重试。
+	if ra.internalRequest.IsChatRequest() && isEmptyChatResponse(internalResponse) {
+		log.Warnf("upstream channel %s returned empty response, will retry next channel/key", ra.channel.Name)
+		return fmt.Errorf("empty response (no content and no tool calls)")
+	}
+
 	inResponse, err := ra.inAdapter.TransformResponse(ctx, internalResponse)
 	if err != nil {
 		log.Warnf("failed to transform response: %v", err)
