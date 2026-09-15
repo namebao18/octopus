@@ -422,7 +422,23 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 			}
 
 			data, err := ra.transformStreamData(ctx, r.data)
-			if err != nil || len(data) == 0 {
+			if err != nil {
+				// 空壳 chunk 防护（v0.9.28-emptyfix.5）：
+				// 若首个有效 token 之前就收到完全空壳块，说明该上游渠道不可用，
+				// 直接返回错误以便外层换渠道/换 key 重试（此时尚未向客户端写出内容）；
+				// 若已开始输出，则只丢弃该块，避免把野块透传给客户端导致对话中断。
+				if err == errEmptyStreamShell {
+					if firstToken {
+						log.Warnf("upstream channel %s returned empty stream shell before first token, will retry next channel/key", ra.channel.Name)
+						_ = response.Body.Close()
+						return errEmptyStreamShell
+					}
+					log.Warnf("drop empty stream shell chunk from channel %s after first token", ra.channel.Name)
+					continue
+				}
+				continue
+			}
+			if len(data) == 0 {
 				continue
 			}
 			if firstToken {
@@ -455,6 +471,14 @@ func (ra *relayAttempt) transformStreamData(ctx context.Context, data string) ([
 	}
 	if internalStream == nil {
 		return nil, nil
+	}
+
+	// 空壳 chunk 防护（v0.9.28-emptyfix.5）：部分上游会在流式响应里夹杂
+	// 完全空的对象（无 choices/error/id/object/model/usage），直接透传会让下游
+	// 客户端 zod 校验失败（invalid_union）并中断对话。交由调用方决定重试或丢弃。
+	if isEmptyStreamShell(internalStream) {
+		log.Warnf("upstream channel %s returned empty stream shell chunk", ra.channel.Name)
+		return nil, errEmptyStreamShell
 	}
 
 	inStream, err := ra.inAdapter.TransformStream(ctx, internalStream)
