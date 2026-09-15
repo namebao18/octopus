@@ -156,7 +156,18 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 
 	// 所有通道都失败
 	metrics.Save(c.Request.Context(), false, lastErr, iter.Attempts())
-	resp.Error(c, http.StatusBadGateway, "all channels failed")
+	// 把最后一个上游错误的原因带出去，便于定位（否则只剩笼统的 "all channels failed"，
+	// 例如上游 200 返回 {"error":...} 被空回复补丁重试后，真实错误会被完全吞掉）。
+	errMsg := "all channels failed"
+	if lastErr != nil {
+		msg := lastErr.Error()
+		const maxErrLen = 500 // 截断，避免上游大段 body 撑爆响应
+		if r := []rune(msg); len(r) > maxErrLen {
+			msg = string(r[:maxErrLen]) + "...(truncated)"
+		}
+		errMsg = "all channels failed: " + msg
+	}
+	resp.Error(c, http.StatusBadGateway, errMsg)
 }
 
 // attempt 统一管理一次通道尝试的完整生命周期
@@ -390,6 +401,16 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 		}
 	}()
 
+	// drainResults 排空后台读取协程尚未发送完的结果。
+	// 提前 return（首 token 超时 / 空壳块换渠道）时，读取协程可能正阻塞在 results 发送上，
+	// 不排空会导致该 goroutine 永久泄漏（upstream 原版 first-token-timeout 分支同样有此问题）。
+	drainResults := func() {
+		go func() {
+			for range results {
+			}
+		}()
+	}
+
 	var firstTokenTimer *time.Timer
 	var firstTokenC <-chan time.Time
 	if firstToken && ra.firstTokenTimeOutSec > 0 {
@@ -410,6 +431,7 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 		case <-firstTokenC:
 			log.Warnf("first token timeout (%ds), switching channel", ra.firstTokenTimeOutSec)
 			_ = response.Body.Close()
+			drainResults() // 排空读取协程，避免 goroutine 泄漏
 			return fmt.Errorf("first token timeout (%ds)", ra.firstTokenTimeOutSec)
 		case r, ok := <-results:
 			if !ok {
@@ -431,6 +453,7 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 					if firstToken {
 						log.Warnf("upstream channel %s returned empty stream shell before first token, will retry next channel/key", ra.channel.Name)
 						_ = response.Body.Close()
+						drainResults() // 排空读取协程，避免 goroutine 泄漏
 						return errEmptyStreamShell
 					}
 					log.Warnf("drop empty stream shell chunk from channel %s after first token", ra.channel.Name)
