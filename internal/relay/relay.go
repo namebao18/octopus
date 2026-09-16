@@ -215,8 +215,15 @@ func (ra *relayAttempt) attempt() attemptResult {
 		RequestFailed: 1,
 	})
 
-	// 熔断器：记录失败
-	balancer.RecordFailure(ra.channel.ID, ra.usedKey.ID, ra.internalRequest.Model)
+	// 熔断器：区分两类失败（2026-09-16 补丁）
+	//   确定性错误（余额不足/鉴权失败/模型不存在）→ 一次即熔断 + 长冷却
+	//   临时性错误（超时/连接失败/5xx 等）      → 按连续失败阈值累计
+	if deterministic, reason := balancer.ClassifyFailure(statusCode, fwdErr.Error()); deterministic {
+		balancer.RecordDeterministicFailure(ra.channel.ID, ra.usedKey.ID, ra.internalRequest.Model,
+			statusCode, reason)
+	} else {
+		balancer.RecordFailure(ra.channel.ID, ra.usedKey.ID, ra.internalRequest.Model)
+	}
 
 	ra.metrics.ParamOverride = paramOverrideValue(ra.channel.ParamOverride)
 
@@ -319,7 +326,9 @@ func (ra *relayAttempt) forward() (int, error) {
 		if err != nil {
 			return 0, fmt.Errorf("failed to read response body: %w", err)
 		}
-		return 0, fmt.Errorf("upstream error: %d: %s", response.StatusCode, string(body))
+		// 注意：这里必须把真实状态码返回给上层，熔断器要靠它区分
+		// 「确定性错误」（401/402/403/404 等，一次即长冷却）与「临时性错误」
+		return response.StatusCode, fmt.Errorf("upstream error: %d: %s", response.StatusCode, string(body))
 	}
 
 	// 处理响应
