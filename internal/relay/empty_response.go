@@ -11,6 +11,13 @@ import (
 // 用于在流式处理中把这种野块与普通 chunk 区分开，以便在首 token 之前触发换渠道重试。
 var errEmptyStreamShell = errors.New("empty stream shell")
 
+// ErrEmptyResponse 表示上游返回"零输出空回复"（无内容/无工具调用）。
+//
+// ⚠️ 2026-09-21 新增：这是一个**哨兵错误**，让调用方能把"空回复"与"真实上游失败"
+// 区分开——空回复只做"换渠道重试"，**不计入熔断计数**（否则偶发空回复的
+// 正常渠道会被误熔断）。
+var ErrEmptyResponse = errors.New("empty response (no content and no tool calls)")
+
 // isEmptyChatResponse 判断非流式 chat 响应是否为"零输出空回复"。
 //
 // 背景：部分免费模型（如 gemini-3.5-flash-lite）偶发返回 finish_reason=stop，
@@ -55,6 +62,12 @@ func isEmptyChatResponse(resp *model.InternalLLMResponse) bool {
 		if len(msg.ToolCalls) > 0 {
 			return false
 		}
+		// ⚠️ 2026-09-21 新增：有拒答内容（Refusal）→ 是上游的内容审核/安全拒答，
+		//   属**确定性结果**，换渠道重试也会被同样拒答 ⇒ 不算"空回复"，
+		//   避免逐渠道重试、污染熔断计数、最后 502。
+		if strings.TrimSpace(msg.Refusal) != "" {
+			return false
+		}
 		// 有纯文本内容（去除空白后非空）→ 不算空
 		if msg.Content.Content != nil && strings.TrimSpace(*msg.Content.Content) != "" {
 			return false
@@ -65,6 +78,12 @@ func isEmptyChatResponse(resp *model.InternalLLMResponse) bool {
 		}
 		// 有思考/推理内容 → 不算空（保守处理 reasoning-only 响应）
 		if msg.GetReasoningContent() != "" {
+			return false
+		}
+		// ⚠️ 2026-09-21 新增：finish_reason=length（token 被截断）→ 是**确定性结果**
+		//   （常见于 reasoning 模型把 token 全花在隐藏思考上、max_tokens 过小），
+		//   换渠道重试也解决不了 ⇒ 不算"空回复"，避免全渠道重试后 502。
+		if choice.FinishReason != nil && *choice.FinishReason == "length" {
 			return false
 		}
 	}

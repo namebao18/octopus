@@ -19,8 +19,13 @@ import (
 )
 
 const (
-	updateUrl    = "https://github.com/bestruirui/octopus/releases/latest/download"
-	updateApiUrl = "https://api.github.com/repos/bestruirui/octopus/releases/latest"
+	// ⚠️ 2026-09-21 魔改：更新地址改到**自建 fork**（namebao18/octopus）。
+	//   原版指向 bestruirui/octopus —— 一旦有人 POST /api/v1/update，
+	//   会下载**官方版**覆盖本魔改镜像，导致所有补丁（空回复重试/熔断/去价格）一次性丢失。
+	//   自建 fork 不发布 release ⇒ 更新请求会失败（安全），不会覆盖。
+	//   （前端"检查更新"UI 已在 emptyfix.3 移除，此处是后端兜底。）
+	updateUrl    = "https://github.com/namebao18/octopus/releases/latest/download"
+	updateApiUrl = "https://api.github.com/repos/namebao18/octopus/releases/latest"
 )
 
 type LatestInfo struct {

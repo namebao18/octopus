@@ -36,8 +36,19 @@ type circuitEntry struct {
 	// 普通网络类错误仍走 TripCount 指数退避，两者互不干扰。
 	OpenUntil time.Time
 
+	// ==== 2026-09-21 新增：HalfOpen 试探超时自愈（修「永久卡 HalfOpen」死锁）====
+	// 背景：IsTripped 在放行试探时先置 HalfOpen 再 return false；若调用方随后
+	//   因「出站适配器为空 / 类型不兼容」等原因 Skip（不产生任何 RecordSuccess/Failure），
+	//   状态就永久卡在 HalfOpen ⇒ case StateHalfOpen 永远 return true,0 ⇒ 该渠道永久不可用。
+	// 对策：记录试探开始时间，IsTripped 发现试探超过 probeTimeout 仍无结果 → 重新放行。
+	HalfOpenAt time.Time
+
 	mu sync.Mutex
 }
+
+// probeTimeout 半开试探的存活时间：超过它仍无 Record 结果，视为试探丢失，允许重新试探。
+// 取 90s（大于普通请求的最长首字超时，避免正常试探被误判为丢失）。
+const probeTimeout = 90 * time.Second
 
 // 全局熔断器存储
 var globalBreaker sync.Map // key: string -> value: *circuitEntry
@@ -107,19 +118,24 @@ func GetCooldown(tripCount int) time.Duration {
 // ==== 确定性错误判定补丁（2026-09-16）====
 
 // deterministicStatus 这些 HTTP 状态码代表「重试也不会变好」：
-// 401 鉴权失败、402 欠费/余额、403 无权限、404 模型/端点不存在。
+// 401 鉴权失败、402 欠费/余额、404 模型/端点不存在。
+// ⚠️ 2026-09-21 收紧：**去掉 403** —— Cloudflare/WAF/反代限流常以 403 表达
+//   **临时封禁**（重试会变好），误判会让好渠道被长冷却 30 分钟。
+//   403 仍可经关键词（如 "invalid api key"）判为确定性，但不单凭状态码。
 // 注意：故意不含 400（可能是我方请求体问题，误判会把整组渠道全部长冷却）、
 // 也不含 408/429/5xx（属临时性）。
-var deterministicStatus = map[int]bool{401: true, 402: true, 403: true, 404: true}
+var deterministicStatus = map[int]bool{401: true, 402: true, 404: true}
 
 // deterministicKeywords 有些厂商用 429/500 来表达「余额不足」，
 // 因此除了状态码还要看错误文本（如魔搭的 429 + "insufficient balance"、
 // 智谱的 429 + "余额不足或无可用资源包"）。
+// ⚠️ 2026-09-21 收紧：去掉过于宽泛的词（"billing"/"unauthorized"/"账户余额"），
+//   它们可能出现在 5xx 网关错误页里造成误判；改用更明确的组合词。
 var deterministicKeywords = []string{
 	"insufficient balance", "insufficient_quota", "insufficient quota",
 	"exceeded your current quota", "quota exceeded", "credit balance",
-	"invalid api key", "invalid_api_key", "unauthorized", "authentication failed",
-	"余额不足", "无可用资源包", "欠费", "账户余额", "arrears", "billing",
+	"invalid api key", "invalid_api_key", "authentication failed",
+	"余额不足", "无可用资源包", "欠费", "arrears",
 }
 
 // ClassifyFailure 判定一次失败是否为「确定性错误」，并给出简短原因。
@@ -162,6 +178,7 @@ func IsTripped(channelID, keyID int, modelName string) (tripped bool, remaining 
 		// 冷却到期 → 放一个试探请求（半开），成功则恢复，失败则继续熔断
 		entry.OpenUntil = time.Time{}
 		entry.State = StateHalfOpen
+		entry.HalfOpenAt = time.Now() // 2026-09-21：记录试探开始时间（超时自愈用）
 		log.Infof("circuit breaker [%s] deterministic cooldown elapsed -> HalfOpen", key)
 		return false, 0
 	}
@@ -175,6 +192,7 @@ func IsTripped(channelID, keyID int, modelName string) (tripped bool, remaining 
 		elapsed := time.Since(entry.LastFailureTime)
 		if elapsed >= cooldown {
 			entry.State = StateHalfOpen
+			entry.HalfOpenAt = time.Now() // 2026-09-21：记录试探开始时间（超时自愈用）
 			log.Infof("circuit breaker [%s] Open -> HalfOpen (cooldown %v elapsed)", key, cooldown)
 			return false, 0
 		}
@@ -182,6 +200,15 @@ func IsTripped(channelID, keyID int, modelName string) (tripped bool, remaining 
 		return true, cooldown - elapsed
 
 	case StateHalfOpen:
+		// ⚠️ 2026-09-21 修复「永久卡 HalfOpen」死锁：
+		//   正常情况应有一个试探请求在跑，跑完会调 RecordSuccess/Failure 收尾。
+		//   但若试探请求被调用方 Skip 掉（适配器为空/类型不兼容等，不产生 Record），
+		//   状态会永久停在 HalfOpen。这里用超时兜底：试探超时 → 重新放行。
+		if entry.HalfOpenAt.IsZero() || time.Since(entry.HalfOpenAt) > probeTimeout {
+			entry.HalfOpenAt = time.Now()
+			log.Warnf("circuit breaker [%s] HalfOpen probe timeout -> allow retry (self-heal)", key)
+			return false, 0
+		}
 		// 已有试探请求在进行中，拒绝其他请求
 		return true, 0
 
@@ -212,6 +239,7 @@ func RecordSuccess(channelID, keyID int, modelName string) {
 	entry.TripCount = 0
 	entry.Deterministic = false
 	entry.OpenUntil = time.Time{}
+	entry.HalfOpenAt = time.Time{} // 2026-09-21：清试探时间戳
 }
 
 // RecordDeterministicFailure 记录「确定性失败」：一次即熔断，并给长冷却。
@@ -284,4 +312,37 @@ func RecordFailure(channelID, keyID int, modelName string) {
 		// 理论上不应该在 Open 状态下接收到失败记录（请求应被拒绝），
 		// 但为安全起见仍更新失败时间
 	}
+}
+
+// ReleaseProbe 释放"半开试探"占位（2026-09-21 新增，修「永久卡 HalfOpen」死锁）。
+//
+// 场景：IsTripped 放行了试探（置 HalfOpen），但调用方随后因**非渠道本身的问题**
+// 跳过该渠道（如"出站适配器为空"/"类型不兼容"），不会调用 RecordSuccess/Failure。
+// 此时若什么都不做，状态会永久卡 HalfOpen。
+//
+// 本函数把 HalfOpen 退回**之前的 Open**（保持冷却，但不额外惩罚）：
+//   - 若原本是确定性错误（OpenUntil 已过），退回 Closed（让它下轮正常参与）
+//   - 否则退回 Open 并沿用当前冷却时间（TripCount 不变）
+//
+// 调用点：relay.go 里 SkipCircuitBreak 放行后、又在适配器/类型检查处 Skip 的分支。
+func ReleaseProbe(channelID, keyID int, modelName string) {
+	key := circuitKey(channelID, keyID, modelName)
+	v, ok := globalBreaker.Load(key)
+	if !ok {
+		return
+	}
+	entry := v.(*circuitEntry)
+
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+
+	if entry.State != StateHalfOpen {
+		return // 不是半开状态，无需处理
+	}
+	entry.HalfOpenAt = time.Time{}
+	// 退回 Closed：让该渠道下轮正常参与（试探本就没真正失败）
+	entry.State = StateClosed
+	entry.Deterministic = false
+	entry.OpenUntil = time.Time{}
+	log.Infof("circuit breaker [%s] HalfOpen probe released (skipped by caller) -> Closed", key)
 }

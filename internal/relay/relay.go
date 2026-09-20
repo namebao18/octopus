@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -112,16 +113,21 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		// 出站适配器
 		outAdapter := outbound.Get(channel.Type)
 		if outAdapter == nil {
+			// ⚠️ 2026-09-21：若上面 SkipCircuitBreak 刚放行了试探（HalfOpen），
+			//   这里 skip 不会产生 Record ⇒ 必须 ReleaseProbe 防「永久卡 HalfOpen」。
+			balancer.ReleaseProbe(channel.ID, usedKey.ID, item.ModelName)
 			iter.Skip(channel.ID, usedKey.ID, channel.Name, fmt.Sprintf("unsupported channel type: %d", channel.Type))
 			continue
 		}
 
 		// 类型兼容性检查
 		if internalRequest.IsEmbeddingRequest() && !outbound.IsEmbeddingChannelType(channel.Type) {
+			balancer.ReleaseProbe(channel.ID, usedKey.ID, item.ModelName)
 			iter.Skip(channel.ID, usedKey.ID, channel.Name, "channel type not compatible with embedding request")
 			continue
 		}
 		if internalRequest.IsChatRequest() && !outbound.IsChatChannelType(channel.Type) {
+			balancer.ReleaseProbe(channel.ID, usedKey.ID, item.ModelName)
 			iter.Skip(channel.ID, usedKey.ID, channel.Name, "channel type not compatible with chat request")
 			continue
 		}
@@ -218,7 +224,11 @@ func (ra *relayAttempt) attempt() attemptResult {
 	// 熔断器：区分两类失败（2026-09-16 补丁）
 	//   确定性错误（余额不足/鉴权失败/模型不存在）→ 一次即熔断 + 长冷却
 	//   临时性错误（超时/连接失败/5xx 等）      → 按连续失败阈值累计
-	if deterministic, reason := balancer.ClassifyFailure(statusCode, fwdErr.Error()); deterministic {
+	if errors.Is(fwdErr, ErrEmptyResponse) {
+		// 2026-09-21: empty response is a transient upstream behavior, NOT a broken channel.
+		// Counting it would falsely trip healthy channels -> skip circuit breaker, just retry next.
+		log.Warnf("channel %s empty response -> skip circuit breaker (retry next channel)", ra.channel.Name)
+	} else if deterministic, reason := balancer.ClassifyFailure(statusCode, fwdErr.Error()); deterministic {
 		balancer.RecordDeterministicFailure(ra.channel.ID, ra.usedKey.ID, ra.internalRequest.Model,
 			statusCode, reason)
 	} else {
@@ -536,7 +546,7 @@ func (ra *relayAttempt) handleResponse(ctx context.Context, response *http.Respo
 	// 注意必须在 c.Data 写回客户端之前拦截，否则 Writer 已写入无法重试。
 	if ra.internalRequest.IsChatRequest() && isEmptyChatResponse(internalResponse) {
 		log.Warnf("upstream channel %s returned empty response, will retry next channel/key", ra.channel.Name)
-		return fmt.Errorf("empty response (no content and no tool calls)")
+		return ErrEmptyResponse
 	}
 
 	inResponse, err := ra.inAdapter.TransformResponse(ctx, internalResponse)
