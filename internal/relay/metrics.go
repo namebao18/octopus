@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"maps"
 	"strings"
 	"time"
 
@@ -174,10 +173,17 @@ func (m *RelayMetrics) saveLog(ctx context.Context, err error, duration time.Dur
 				relayLog.RequestContent = string(reqJSON)
 			} else {
 				var override map[string]any
-				if err := json.Unmarshal([]byte(m.ParamOverride), &override); err != nil {
+				// 与 relay.forward 保持一致：先做占位符替换，再合并，日志才能反映真正发给上游的内容。
+				if err := json.Unmarshal([]byte(applyParamOverridePlaceholders(m.ParamOverride, m.InternalRequest)), &override); err != nil {
 					relayLog.RequestContent = string(reqJSON)
 				} else {
-					maps.Copy(reqMap, override)
+					for k, v := range override {
+						if s, ok := v.(string); ok && s == "__OCTOPUS_DELETE__" {
+							delete(reqMap, k)
+							continue
+						}
+						reqMap[k] = v
+					}
 					if finalJSON, err := json.Marshal(reqMap); err != nil {
 						relayLog.RequestContent = string(reqJSON)
 					} else {

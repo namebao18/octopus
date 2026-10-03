@@ -1,6 +1,6 @@
 # 自定义 Docker 镜像构建工作流（补丁镜像专用）
 #
-# 当前补丁内容（v0.9.28-emptyfix.9）：
+# 当前补丁内容（v0.9.28-emptyfix.10）：
 #   A. 空回复/空壳响应检测 → 自动换渠道重试（emptyfix.1~.6）
 #   B. 熔断器区分确定性/临时性错误 + 探测守护（ReleaseProbe）
 #   C. param_override 占位符模板：Claude 的思考开关/强度透传到任意上游
@@ -99,4 +99,4 @@ jobs:
           file: ./scripts/dockerfiles/Dockerfile.debian
           platforms: linux/amd64
           push: true
-          tags: ghcr.io/namebao18/octopus:v0.9.28-emptyfix.9
+          tags: ghcr.io/namebao18/octopus:v0.9.28-emptyfix.10
