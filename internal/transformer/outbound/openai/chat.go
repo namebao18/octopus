@@ -25,6 +25,8 @@ func (o *ChatOutbound) TransformRequest(ctx context.Context, request *model.Inte
 		}
 	}
 
+	ensureMessageContent(request.Messages)
+
 	if request.Stream != nil && *request.Stream {
 		if request.StreamOptions == nil {
 			request.StreamOptions = &model.StreamOptions{IncludeUsage: true}
@@ -55,6 +57,23 @@ func (o *ChatOutbound) TransformRequest(ctx context.Context, request *model.Inte
 	req.URL = parsedUrl
 	req.Method = http.MethodPost
 	return req, nil
+}
+
+// ensureMessageContent 保证每条消息都带合法的 content 字段。
+// 上游（如 opendesign、deepseek 官方）要求 content 必须是 string 或数组；
+// 历史会话里模型调用工具但无文本时，或工具结果为空时，本地转换会得到空
+// MessageContent，被 MarshalJSON 序列化成 null 或直接省略该字段，导致上游 422。
+// 这里在序列化前统一补成 ""（仅作用于 OpenAI 兼容出站，不影响 Anthropic/Gemini 出站）。
+func ensureMessageContent(messages []model.Message) {
+	for i := range messages {
+		m := &messages[i]
+		hasContent := (m.Content.Content != nil && *m.Content.Content != "") || len(m.Content.MultipleContent) > 0
+		if hasContent {
+			continue
+		}
+		empty := ""
+		m.Content = model.MessageContent{Content: &empty}
+	}
 }
 
 func (o *ChatOutbound) TransformResponse(ctx context.Context, response *http.Response) (*model.InternalLLMResponse, error) {

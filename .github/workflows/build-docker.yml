@@ -1,11 +1,14 @@
 # 自定义 Docker 镜像构建工作流（补丁镜像专用）
 #
-# 当前补丁内容（v0.9.28-emptyfix.10）：
+# 当前补丁内容（v0.9.28-emptyfix.11）：
 #   A. 空回复/空壳响应检测 → 自动换渠道重试（emptyfix.1~.6）
 #   B. 熔断器区分确定性/临时性错误 + 探测守护（ReleaseProbe）
 #   C. param_override 占位符模板：Claude 的思考开关/强度透传到任意上游
 #      （{{thinking_type}} / {{thinking_enabled}} / {{reasoning_effort}} /
 #        {{thinking_budget}} / {{thinking_json}}，另支持 __OCTOPUS_DELETE__ 删除字段）
+#   D. 出站消息 content 兜底：OpenAI 兼容出站序列化前，把空的 MessageContent
+#      统一补成 ""，避免严格上游（opendesign / deepseek 官方）对
+#      「调用工具但无文本」或「工具结果为空」的历史消息返回 422
 #
 # 与原仓库 release.yaml 的区别：
 #   1. 只构建 linux/amd64 单平台（NAS 用，省一半以上时间）
@@ -40,6 +43,11 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version: 'stable'
+
+      # 单元测试（回归防线）：失败则整个 job 失败，不会推送镜像。
+      # 覆盖「空 content 导致上游 422」等历史踩坑。
+      - name: Run Go tests
+        run: go test ./internal/transformer/...
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -99,4 +107,4 @@ jobs:
           file: ./scripts/dockerfiles/Dockerfile.debian
           platforms: linux/amd64
           push: true
-          tags: ghcr.io/namebao18/octopus:v0.9.28-emptyfix.10
+          tags: ghcr.io/namebao18/octopus:v0.9.28-emptyfix.11
