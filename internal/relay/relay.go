@@ -593,17 +593,18 @@ func paramOverrideValue(ptr *string) string {
 // 重要安全性：仅当 override 文本里出现 "{{" 时才进行替换。因此现有那些
 // 不含占位符的静态 param_override 渠道行为完全不变（零行为变化）。
 //
-// 支持的占位符：
+// 支持的占位符（未显式传 thinking 的请求一律按"关闭"处理，保证生成的 JSON 始终合法）：
 //
-//	{{thinking_type}}    -> enabled / adaptive / disabled / 空字符串
+//	{{thinking_type}}    -> enabled / adaptive / disabled
 //	{{thinking_enabled}} -> true / false        （放在不加引号的布尔位置）
 //	{{reasoning_effort}} -> low / medium / high / 空字符串（放在字符串位置）
 //	{{thinking_budget}}  -> 整数预算 / 0         （放在不加引号的数值位置）
-//	{{thinking_json}}    -> {"type":"enabled",...} 原始对象片段；未指定时为 null
+//	{{thinking_json}}    -> {"type":"enabled","budget_tokens":N} / {"type":"enabled"} /
+//	                        {"type":"disabled"} 原始对象片段（adaptive 统一降级为 enabled）
 //
 // 示例（某渠道使用 DeepSeek 风格参数）：
 //
-//	{"thinking": {"type": "{{thinking_type}}"}}
+//	{"thinking": {{thinking_json}}}
 //
 // 示例（某渠道使用 Qwen 风格参数）：
 //
@@ -613,8 +614,8 @@ func applyParamOverridePlaceholders(override string, req *model.InternalLLMReque
 		return override
 	}
 
-	// 推断本次请求的思考状态。
-	thinkingType := ""
+	// 推断本次请求的思考状态（默认关闭）。
+	thinkingType := "disabled"
 	switch {
 	case req.AdaptiveThinking:
 		thinkingType = "adaptive"
@@ -623,14 +624,15 @@ func applyParamOverridePlaceholders(override string, req *model.InternalLLMReque
 	case req.ThinkingDisabled:
 		thinkingType = "disabled"
 	}
-	enabled := thinkingType == "enabled" || thinkingType == "adaptive"
+	enabled := thinkingType != "disabled"
 
 	var budget int64
 	if req.ReasoningBudget != nil {
 		budget = *req.ReasoningBudget
 	}
 
-	thinkingJSON := "null"
+	// {{thinking_json}}：面向 OpenAI 兼容上游；adaptive 降级为 enabled。
+	thinkingJSON := `{"type":"disabled"}`
 	switch thinkingType {
 	case "enabled":
 		if budget > 0 {
@@ -639,9 +641,7 @@ func applyParamOverridePlaceholders(override string, req *model.InternalLLMReque
 			thinkingJSON = `{"type":"enabled"}`
 		}
 	case "adaptive":
-		thinkingJSON = `{"type":"adaptive"}`
-	case "disabled":
-		thinkingJSON = `{"type":"disabled"}`
+		thinkingJSON = `{"type":"enabled"}`
 	}
 
 	replacer := strings.NewReplacer(
