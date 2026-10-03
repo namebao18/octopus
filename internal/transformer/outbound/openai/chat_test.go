@@ -9,6 +9,25 @@ import (
 
 func strPtr(s string) *string { return &s }
 
+// contentRaw 返回消息序列化后 content 字段的原始 JSON。
+// 字段缺失（被 omitzero 省略）时返回 "<MISSING>"，content 为 null 时返回 "null"。
+func contentRaw(t *testing.T, m model.Message) string {
+	t.Helper()
+	raw, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("序列化失败: %v", err)
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		t.Fatalf("反序列化失败: %v (%s)", err, raw)
+	}
+	c, ok := obj["content"]
+	if !ok {
+		return "<MISSING>"
+	}
+	return string(c)
+}
+
 // TestEnsureMessageContent 覆盖「空 content 导致上游 422」这一整类问题。
 //
 // 背景：历史会话里模型调用工具但无文本、或工具结果为空时，本地转换会得到空
@@ -18,39 +37,23 @@ func strPtr(s string) *string { return &s }
 func TestEnsureMessageContent(t *testing.T) {
 	empty := ""
 
-	t.Run("空 content 被补成空串", func(t *testing.T) {
+	t.Run("空内容一律补成空串", func(t *testing.T) {
 		messages := []model.Message{
-			{Role: "user", Content: model.MessageContent{Content: strPtr("hi")}},
 			// assistant 调用工具但无文本
 			{Role: "assistant", ToolCalls: []model.ToolCall{{ID: "c1", Type: "function"}}},
 			// 工具结果为空
 			{Role: "tool", ToolCallID: strPtr("c1")},
 			// 显式空串
 			{Role: "assistant", Content: model.MessageContent{Content: &empty}},
+			// 空的多模态数组
+			{Role: "assistant", Content: model.MessageContent{MultipleContent: []model.MessageContentPart{}}},
 		}
 
 		ensureMessageContent(messages)
 
-		for i, m := range messages {
-			raw, err := json.Marshal(m)
-			if err != nil {
-				t.Fatalf("消息 %d 序列化失败: %v", i, err)
-			}
-			var obj map[string]json.RawMessage
-			if err := json.Unmarshal(raw, &obj); err != nil {
-				t.Fatalf("消息 %d 反序列化失败: %v (%s)", i, err, raw)
-			}
-			content, ok := obj["content"]
-			if !ok {
-				t.Errorf("消息 %d 序列化后缺少 content 字段: %s", i, raw)
-				continue
-			}
-			if string(content) == "null" {
-				t.Errorf("消息 %d 序列化后 content 为 null: %s", i, raw)
-				continue
-			}
-			if string(content) != `""` {
-				t.Errorf("消息 %d 期望 content 为空串，实得 %s: %s", i, content, raw)
+		for i := range messages {
+			if got := contentRaw(t, messages[i]); got != `""` {
+				t.Errorf("消息 %d 期望 content=\"\"，实得 %s", i, got)
 			}
 		}
 	})
@@ -58,7 +61,7 @@ func TestEnsureMessageContent(t *testing.T) {
 	t.Run("非空内容保持不变", func(t *testing.T) {
 		messages := []model.Message{
 			{Role: "user", Content: model.MessageContent{Content: strPtr("hello world")}},
-			// 多模态（只有图片、无文本）必须保持原样，不能被改成空串
+			// 只有图片、无文本的多模态内容必须保持原样，不能被改成空串
 			{Role: "user", Content: model.MessageContent{MultipleContent: []model.MessageContentPart{
 				{Type: "image_url"},
 			}}},
@@ -66,14 +69,10 @@ func TestEnsureMessageContent(t *testing.T) {
 
 		ensureMessageContent(messages)
 
-		raw, _ := json.Marshal(messages[0])
-		var obj map[string]json.RawMessage
-		_ = json.Unmarshal(raw, &obj)
-		if string(obj["content"]) != `"hello world"` {
-			t.Errorf("文本内容被改动: %s", raw)
+		if got := contentRaw(t, messages[0]); got != `"hello world"` {
+			t.Errorf("文本内容被改动: %s", got)
 		}
-
-		if len(messages[1].Content.MultipleContent) != 1 || messages[1].Content.Content != nil {
+		if messages[1].Content.Content != nil || len(messages[1].Content.MultipleContent) != 1 {
 			t.Errorf("多模态内容被改动: %+v", messages[1].Content)
 		}
 	})
