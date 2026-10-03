@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -304,12 +303,22 @@ func (ra *relayAttempt) forward() (int, error) {
 			return 0, nil
 		}
 		var override map[string]any
-		if err := json.Unmarshal([]byte(*ra.channel.ParamOverride), &override); err != nil {
+		overrideText := applyParamOverridePlaceholders(*ra.channel.ParamOverride, ra.internalRequest)
+		if err := json.Unmarshal([]byte(overrideText), &override); err != nil {
 			log.Warnf("failed to unmarshal param_override: %v, skipping", err)
 			outboundRequest.Body = io.NopCloser(bytes.NewBuffer(body))
 			return 0, nil
 		}
-		maps.Copy(bodyMap, override)
+		// 逐键合并（等价于原来的 maps.Copy），并额外支持"删除"：
+		// 值为保留字 __OCTOPUS_DELETE__ 时从请求体中删除该字段。
+		// 用于移除 octopus 默认注入、但目标上游不接受的参数（如 reasoning_effort）。
+		for k, v := range override {
+			if s, ok := v.(string); ok && s == "__OCTOPUS_DELETE__" {
+				delete(bodyMap, k)
+				continue
+			}
+			bodyMap[k] = v
+		}
 		modifiedBody, err := json.Marshal(bodyMap)
 		if err != nil {
 			log.Warnf("failed to marshal modified body: %v, skipping param_override", err)
@@ -574,4 +583,73 @@ func paramOverrideValue(ptr *string) string {
 		return ""
 	}
 	return *ptr
+}
+
+// applyParamOverridePlaceholders 在 param_override 文本被解析为 JSON 之前，
+// 依据本次内部请求携带的 thinking 状态替换其中的占位符，使用户可以按渠道把
+// Claude 的思考强度适配成各上游所需的参数形态（enable_thinking / thinking /
+// chat_template_kwargs / reasoning_effort 等）。
+//
+// 重要安全性：仅当 override 文本里出现 "{{" 时才进行替换。因此现有那些
+// 不含占位符的静态 param_override 渠道行为完全不变（零行为变化）。
+//
+// 支持的占位符：
+//
+//	{{thinking_type}}    -> enabled / adaptive / disabled / 空字符串
+//	{{thinking_enabled}} -> true / false        （放在不加引号的布尔位置）
+//	{{reasoning_effort}} -> low / medium / high / 空字符串（放在字符串位置）
+//	{{thinking_budget}}  -> 整数预算 / 0         （放在不加引号的数值位置）
+//	{{thinking_json}}    -> {"type":"enabled",...} 原始对象片段；未指定时为 null
+//
+// 示例（某渠道使用 DeepSeek 风格参数）：
+//
+//	{"thinking": {"type": "{{thinking_type}}"}}
+//
+// 示例（某渠道使用 Qwen 风格参数）：
+//
+//	{"enable_thinking": {{thinking_enabled}}}
+func applyParamOverridePlaceholders(override string, req *model.InternalLLMRequest) string {
+	if req == nil || !strings.Contains(override, "{{") {
+		return override
+	}
+
+	// 推断本次请求的思考状态。
+	thinkingType := ""
+	switch {
+	case req.AdaptiveThinking:
+		thinkingType = "adaptive"
+	case req.ReasoningEffort != "":
+		thinkingType = "enabled"
+	case req.ThinkingDisabled:
+		thinkingType = "disabled"
+	}
+	enabled := thinkingType == "enabled" || thinkingType == "adaptive"
+
+	var budget int64
+	if req.ReasoningBudget != nil {
+		budget = *req.ReasoningBudget
+	}
+
+	thinkingJSON := "null"
+	switch thinkingType {
+	case "enabled":
+		if budget > 0 {
+			thinkingJSON = fmt.Sprintf(`{"type":"enabled","budget_tokens":%d}`, budget)
+		} else {
+			thinkingJSON = `{"type":"enabled"}`
+		}
+	case "adaptive":
+		thinkingJSON = `{"type":"adaptive"}`
+	case "disabled":
+		thinkingJSON = `{"type":"disabled"}`
+	}
+
+	replacer := strings.NewReplacer(
+		"{{thinking_type}}", thinkingType,
+		"{{thinking_enabled}}", fmt.Sprintf("%t", enabled),
+		"{{reasoning_effort}}", req.ReasoningEffort,
+		"{{thinking_budget}}", fmt.Sprintf("%d", budget),
+		"{{thinking_json}}", thinkingJSON,
+	)
+	return replacer.Replace(override)
 }

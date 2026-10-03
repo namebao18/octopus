@@ -305,7 +305,9 @@ func (i *MessagesInbound) TransformRequest(ctx context.Context, body []byte) (*m
 			chatReq.ReasoningEffort = effort
 			chatReq.AdaptiveThinking = true
 		case ThinkingTypeDisabled:
-			// Explicitly disabled, nothing to do
+			// 显式关闭思考：记录下来，供 relay 层 param_override 模板按渠道适配上游格式。
+			// （历史上这里什么都不做，导致"关闭思考"无法被下游感知。）
+			chatReq.ThinkingDisabled = true
 		default:
 			log.Warnf("unknown thinking type: %s", anthropicReq.Thinking.Type)
 		}

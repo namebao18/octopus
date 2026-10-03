@@ -188,6 +188,12 @@ type InternalLLMRequest struct {
 	// Help field, will not be sent to the llm service.
 	AdaptiveThinking bool `json:"-"`
 
+	// ThinkingDisabled indicates the client explicitly disabled thinking
+	// (anthropic thinking.type == "disabled"). It is a help field and is never
+	// sent upstream; relay-level param_override templates may reference it via
+	// the {{thinking_type}} / {{thinking_enabled}} / {{thinking_json}} placeholders.
+	ThinkingDisabled bool `json:"-"`
+
 	// EnableThinking is used by Alibaba Qwen models to enable thinking/reasoning output.
 	EnableThinking *bool `json:"enable_thinking,omitempty"`
 

@@ -1,4 +1,12 @@
-# 自定义 Docker 镜像构建工作流（空回复检测补丁专用）
+# 自定义 Docker 镜像构建工作流（补丁镜像专用）
+#
+# 当前补丁内容（v0.9.28-emptyfix.9）：
+#   A. 空回复/空壳响应检测 → 自动换渠道重试（emptyfix.1~.6）
+#   B. 熔断器区分确定性/临时性错误 + 探测守护（ReleaseProbe）
+#   C. param_override 占位符模板：Claude 的思考开关/强度透传到任意上游
+#      （{{thinking_type}} / {{thinking_enabled}} / {{reasoning_effort}} /
+#        {{thinking_budget}} / {{thinking_json}}，另支持 __OCTOPUS_DELETE__ 删除字段）
+#
 # 与原仓库 release.yaml 的区别：
 #   1. 只构建 linux/amd64 单平台（NAS 用，省一半以上时间）
 #   2. 只推送 ghcr.io，使用自带 GITHUB_TOKEN，无需配置任何 secrets
@@ -91,4 +99,4 @@ jobs:
           file: ./scripts/dockerfiles/Dockerfile.debian
           platforms: linux/amd64
           push: true
-          tags: ghcr.io/namebao18/octopus:v0.9.28-emptyfix.8
+          tags: ghcr.io/namebao18/octopus:v0.9.28-emptyfix.9
