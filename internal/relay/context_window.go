@@ -5,8 +5,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/bestruirui/octopus/internal/model"
+	"github.com/bestruirui/octopus/internal/model"                   // SettingKey / Group / GroupItem
 	"github.com/bestruirui/octopus/internal/op"
+	tmodel "github.com/bestruirui/octopus/internal/transformer/model" // InternalLLMRequest
 )
 
 // ==================== 上下文窗口感知路由 ====================
@@ -65,7 +66,7 @@ func windowFor(windows map[string]int, channelID int, modelName string) int {
 // estimateInputTokens 估算请求的输入 token 数。
 // 优先取入站阶段已算好的精确值（EstInputTokens）；
 // 缺失时回退为「原始请求体字节数 / 3」的粗估——宁可高估（多跳过）也不低估（放行超限）。
-func estimateInputTokens(internalRequest *model.InternalLLMRequest) int64 {
+func estimateInputTokens(internalRequest *tmodel.InternalLLMRequest) int64 {
 	if internalRequest.EstInputTokens > 0 {
 		return internalRequest.EstInputTokens
 	}
