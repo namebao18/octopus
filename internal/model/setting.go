@@ -1,9 +1,11 @@
 package model
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strconv"
+	"strings"
 )
 
 type SettingKey string
@@ -22,6 +24,11 @@ const (
 	// 确定性错误（余额不足/鉴权失败/模型不存在等）的冷却时间（秒）。
 	// 这类错误重试不会变好，故「一次即熔断」并给这个长冷却，避免每次请求都白撞一遍。
 	SettingKeyCircuitBreakerDeterministicCooldown SettingKey = "circuit_breaker_deterministic_cooldown"
+	// 各「渠道:模型」的上下文窗口（token）配置，JSON。
+	// 用途：请求超过某回退模型的窗口时，跳过该渠道，避免上游静默截断/报错。
+	// 格式：{"a:渠道ID|模型名": 窗口, ...}，也支持仅按模型名 {"模型名": 窗口} 兜底。
+	// 空 = 不做任何过滤（默认，零行为变化）。
+	SettingKeyContextWindows SettingKey = "context_windows"
 )
 
 type Setting struct {
@@ -43,6 +50,8 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyCircuitBreakerMaxCooldown, Value: "600"}, // 默认最大冷却600秒（10分钟）
 		// 默认确定性错误冷却1800秒（30分钟）
 		{Key: SettingKeyCircuitBreakerDeterministicCooldown, Value: "1800"},
+		// 默认不配置任何上下文窗口（空 = 不做窗口过滤，行为与升级前一致）
+		{Key: SettingKeyContextWindows, Value: ""},
 	}
 }
 
@@ -59,6 +68,15 @@ func (s *Setting) Validate() error {
 	case SettingKeyRelayLogKeepEnabled:
 		if s.Value != "true" && s.Value != "false" {
 			return fmt.Errorf("relay log keep enabled must be true or false")
+		}
+		return nil
+	case SettingKeyContextWindows:
+		if strings.TrimSpace(s.Value) == "" {
+			return nil
+		}
+		var m map[string]int
+		if err := json.Unmarshal([]byte(s.Value), &m); err != nil {
+			return fmt.Errorf("context_windows must be a JSON object of \"key\": tokenCount, e.g. {\"6:Qwen/Qwen3.5-27B\": 131072}")
 		}
 		return nil
 	case SettingKeyProxyURL:

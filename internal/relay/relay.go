@@ -51,6 +51,25 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		return
 	}
 
+	// 上下文窗口感知：剔除装不下本次请求的回退渠道（未配置窗口则不过滤）
+	inputTokens := estimateInputTokens(internalRequest)
+	group, skipped := filterGroupByContextWindow(group, func(id int) string {
+		if ch, e := op.ChannelGet(id, c.Request.Context()); e == nil {
+			return ch.Name
+		}
+		return fmt.Sprintf("ch%d", id)
+	}, inputTokens)
+	if len(skipped) > 0 {
+		log.Warnf("context window filter: request %s (~%d tokens) skipped %d channel/model(s): %s",
+			requestModel, inputTokens, len(skipped), strings.Join(skipped, ", "))
+	}
+	if len(group.Items) == 0 {
+		resp.Error(c, http.StatusBadRequest, fmt.Sprintf(
+			"no channel's context window can fit this request (~%d input tokens); "+
+				"add/manage context_windows setting, or reduce conversation size", inputTokens))
+		return
+	}
+
 	// 创建迭代器（策略排序 + 粘性优先）
 	iter := balancer.NewIterator(group, apiKeyID, requestModel)
 	if iter.Len() == 0 {
@@ -264,6 +283,8 @@ func parseRequest(inboundType inbound.InboundType, c *gin.Context) (*model.Inter
 
 	// Pass through the original query parameters
 	internalRequest.Query = c.Request.URL.Query()
+	// 保留原始请求体：供 relay 层在入站未估算 token 时做「字节数/3」的保守估算
+	internalRequest.RawRequest = body
 
 	if err := internalRequest.Validate(); err != nil {
 		resp.Error(c, http.StatusBadRequest, err.Error())

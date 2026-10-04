@@ -1,6 +1,6 @@
 # 自定义 Docker 镜像构建工作流（补丁镜像专用）
 #
-# 当前补丁内容（v0.9.28-emptyfix.11）：
+# 当前补丁内容（v0.9.28-emptyfix.12）：
 #   A. 空回复/空壳响应检测 → 自动换渠道重试（emptyfix.1~.6）
 #   B. 熔断器区分确定性/临时性错误 + 探测守护（ReleaseProbe）
 #   C. param_override 占位符模板：Claude 的思考开关/强度透传到任意上游
@@ -9,6 +9,9 @@
 #   D. 出站消息 content 兜底：OpenAI 兼容出站序列化前，把空的 MessageContent
 #      统一补成 ""，避免严格上游（opendesign / deepseek 官方）对
 #      「调用工具但无文本」或「工具结果为空」的历史消息返回 422
+#   E. 上下文窗口感知路由：请求输入 token 超过某回退渠道的窗口时跳过该渠道，
+#      避免客户端按大窗口规划、网关回退到小窗口模型后静默截断/错乱。
+#      窗口由设置项 context_windows(JSON) 手工配置；未配置 = 不过滤（零行为变化）。
 #
 # 与原仓库 release.yaml 的区别：
 #   1. 只构建 linux/amd64 单平台（NAS 用，省一半以上时间）
@@ -45,9 +48,9 @@ jobs:
           go-version: 'stable'
 
       # 单元测试（回归防线）：失败则整个 job 失败，不会推送镜像。
-      # 覆盖「空 content 导致上游 422」等历史踩坑。
+      # 覆盖「空 content 导致上游 422」「上下文窗口过滤」等历史踩坑。
       - name: Run Go tests
-        run: go test ./internal/transformer/...
+        run: go test ./internal/...
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -107,4 +110,4 @@ jobs:
           file: ./scripts/dockerfiles/Dockerfile.debian
           platforms: linux/amd64
           push: true
-          tags: ghcr.io/namebao18/octopus:v0.9.28-emptyfix.11
+          tags: ghcr.io/namebao18/octopus:v0.9.28-emptyfix.12

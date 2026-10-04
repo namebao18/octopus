@@ -312,6 +312,9 @@ func (i *MessagesInbound) TransformRequest(ctx context.Context, body []byte) (*m
 			log.Warnf("unknown thinking type: %s", anthropicReq.Thinking.Type)
 		}
 	}
+	// 记录估算的输入 token 数（供 relay 层做「上下文窗口感知路由」）。
+	// 入站阶段已逐块统计，是当前最准的可得值；json:"-" 不会发给上游。
+	chatReq.EstInputTokens = i.inputToken
 	return chatReq, nil
 }
 

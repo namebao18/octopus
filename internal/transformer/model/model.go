@@ -244,6 +244,10 @@ type InternalLLMRequest struct {
 	// e.g. the request from the chat/completions endpoint is in the openai/chat_completion format.
 	RawAPIFormat APIFormat `json:"-"`
 
+	// EstInputTokens is the inbound-estimated input token count.
+	// A help field used by relay-side context-window-aware routing; never sent upstream.
+	EstInputTokens int64 `json:"-"`
+
 	// TransformerMetadata stores transformer-specific metadata for preserving format during transformations.
 	// This is a help field and will not be sent to the llm service.
 	TransformerMetadata map[string]string `json:"-"`
